@@ -229,6 +229,60 @@ EXCLUDE_NODE_RE="台湾|下载专用"   # 排除名字里含这些字的
 
 ---
 
+## 可选：顺手调这三个 OpenClash 设置
+
+下面三项**跟本工具无关**，不改也能用。但它们是同一批实测里发现的、对任何人都是
+净收益的设置，写在这里省得你自己再踩一遍。
+
+它们是 OpenClash 的**全局设置，影响所有流量**，改完需要重启一次 OpenClash。
+不确定的话就跳过这一节。
+
+### 1. `find-process-mode` 改成 `off`
+
+进程匹配只对路由器自己发起的流量有效，**转发流量根本查不到进程**。但很多订阅的
+模板里带着 `find-process-mode: strict`，于是每条连接都白做一次进程查找。
+OpenClash 自己的界面说明写的就是：*"Only Works on Routerself, If You Are Not
+Sure, Please Choose off Which Useful in Router Environment"*。
+
+先确认你的配置里有没有 `PROCESS-NAME` / `PROCESS-PATH` 规则：
+
+```bash
+grep -cE 'PROCESS-NAME|PROCESS-PATH' /etc/openclash/$(basename $(uci -q get openclash.config.config_path))
+```
+
+返回 0 就说明这功能对你毫无用处，关掉：
+
+```bash
+uci set openclash.config.find_process_mode='off' && uci commit openclash && /etc/init.d/openclash restart
+```
+
+### 2. 打开订阅自动更新
+
+**这条和本工具直接相关**：看护脚本判定机场整体崩了会去重拉订阅，但如果你从没让
+OpenClash 拉过新订阅，它拉回来的还是同一份缓存 —— 机场换了节点地址你也拿不到。
+
+设成每天凌晨 3 点（geo 那几个任务默认在 4 点，不冲突）：
+
+```bash
+uci set openclash.config.auto_update='1' && uci set openclash.config.config_auto_update_mode='0' && uci set openclash.config.config_update_week_time='*' && uci set openclash.config.auto_update_time='3' && uci commit openclash && /etc/init.d/openclash restart
+```
+
+### 3. 健康检查 URL 从明文 http 换成 https
+
+OpenClash 默认给所有 url-test 组用 `http://www.gstatic.com/generate_204`（明文）。
+明文 HTTP 测出来的延迟和真实 TLS 路径质量是脱节的 —— 一个节点明文能通、TLS 被
+干扰的情况很常见。顺便把间隔拉长、容差调大，减少不必要的出口切换：
+
+```bash
+uci set openclash.config.urltest_address_mod='https://www.gstatic.com/generate_204' && uci set openclash.config.urltest_interval_mod='600' && uci set openclash.config.tolerance='300' && uci commit openclash && /etc/init.d/openclash restart
+```
+
+> 注意这三个 UCI 项只影响**订阅自带的**那些 url-test 组。本工具新建的两个 AI 组
+> 用的是 `ai-guard.conf` 里的独立设置，不受它们影响 —— 这是故意的：通用浏览和
+> AI 服务对"多久探一次、多大差距才换"的需求本来就不一样。
+
+---
+
 ## 常用命令
 
 ```bash
@@ -279,6 +333,36 @@ grep -c ai-groups-overwrite /etc/openclash/custom/openclash_custom_overwrite.sh
 
 顺便提醒：同一次升级也会把 **`openclash_custom_rules.list` 还原成默认版**，
 你自己写的自定义规则会一起消失。这跟本工具无关，但值得你知道。
+
+**你自己写的自定义规则整个失效了（一条都不生效）**
+
+不是本工具引起的，但这个坑很值得知道，因为**它不报任何错**。
+
+`/etc/openclash/custom/openclash_custom_rules.list` 是被 OpenClash 用
+`YAML.load_file` 读取的，所以它必须是**顶层 `rules:` 键 + 每行 `- ` 前缀**：
+
+```yaml
+rules:
+- DOMAIN-SUFFIX,example.com,DIRECT
+- DOMAIN-KEYWORD,foo,DIRECT
+```
+
+如果写成纯文本行（少了 `rules:` 或少了 `- `），YAML 会把整个文件解析成**一个字符串**，
+OpenClash 取到的规则数组是空的 → **整个文件被静默丢弃，日志里连一句警告都没有**。
+
+自查：
+
+```bash
+ruby -ryaml -e "puts YAML.load_file('/etc/openclash/custom/openclash_custom_rules.list').class"
+```
+
+输出 `Hash` 才是对的。输出 `String` 或 `Array` 就是格式错了。
+
+也可以数一下运行配置里的规则条数，正常应该包含你写的那些：
+
+```bash
+ruby -ryaml -e "puts YAML.load_file('/etc/openclash/$(basename $(uci -q get openclash.config.config_path))')['rules'].size"
+```
 
 **组在，但域名还是走兜底规则**
 
