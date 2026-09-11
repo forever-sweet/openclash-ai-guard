@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard / uninstall.sh
+# openclash-ai-proxy-group / uninstall.sh
 # 干净卸载：撤掉定时任务、还原官方钩子、删掉自己的文件，然后重启 OpenClash。
 # 不会动你的订阅、不会动 OpenClash 的任何设置。
 
@@ -9,7 +9,7 @@ CRON="/etc/crontabs/root"
 
 echo ""
 echo "=============================================="
-echo " openclash-ai-guard 卸载"
+echo " openclash-ai-proxy-group 卸载"
 echo "=============================================="
 
 echo ""
@@ -48,7 +48,7 @@ rm -f /tmp/ai-guard.log /tmp/ai-guard.state
 echo "  [OK]   已删除 $BASE"
 
 echo ""
-echo "[4/4] 重启 OpenClash 让两个 AI 组消失"
+echo "[4/4] 重启 OpenClash 让注入的 AI 组消失"
 /etc/init.d/openclash restart >/dev/null 2>&1 &
 n=0; while [ $n -lt 24 ]; do sleep 5; n=$((n+1))
     [ "$(/etc/init.d/openclash status 2>/dev/null)" = "running" ] && break; done

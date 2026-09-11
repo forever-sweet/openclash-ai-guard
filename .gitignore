@@ -1,0 +1,24 @@
+# 别把自己路由器上的真实配置提交上来 —— 里面是你在用的中转站域名和节点名。
+# 推到公开仓库之后删不干净：旧提交在 History 里还能看到。
+ai-guard.conf.local
+ai-guard.conf.mine
+ai-guard.conf.new
+
+# 安装/卸载过程产生的备份
+*.bak
+*.bak.*
+*.orig
+hook.orig.*
+*.aiguard.bak
+*.aiguard.new
+*.aiguard.tmp
+
+# 顺手拷进来做对比的运行配置
+*.yaml
+*.yml
+
+# 编辑器/系统垃圾
+.DS_Store
+Thumbs.db
+*.swp
+*~

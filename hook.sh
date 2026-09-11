@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard / hook.sh
+# openclash-ai-proxy-group / hook.sh
 # 安装后位于 /etc/openclash/custom/openclash_custom_overwrite.sh
 #
 # 这是 OpenClash 的官方钩子：它在生成配置完成后调用本脚本，
@@ -17,7 +17,7 @@ fi
 RB="/etc/openclash/ai-guard/ai-groups-overwrite.rb"
 [ -f "$RB" ] || exit 0
 
-# ai-groups-overwrite.rb（openclash-ai-guard）
+# ai-groups-overwrite.rb（openclash-ai-proxy-group）
 ruby "$RB" "$CFG" 2>&1 | while read -r line; do
     [ -n "$line" ] && echo "$(date '+%Y-%m-%d %H:%M:%S') $line" >> /tmp/openclash.log
 done

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-# openclash-ai-guard / ai-groups-overwrite.rb
+# openclash-ai-proxy-group / ai-groups-overwrite.rb  v1.1.0
 #
 # 在 OpenClash 生成配置的最后一步，往配置里注入两个 AI 专用出口策略组和对应的
-# 分流规则。由 OpenClash 官方钩子 openclash_custom_overwrite.sh 调用，参数是
+# 分流规则（外加一个默认关闭的 AI-Docs 组，见 ai-guard.conf 里的 AI_DOCS_*）。
+# 由 OpenClash 官方钩子 openclash_custom_overwrite.sh 调用，参数是
 # 本次即将启动的配置文件路径。
 #
 # 幂等：可以反复执行。任何异常都不写回，配置保持原样。
@@ -64,6 +65,17 @@ API_ADOPT    = cf('AI_API_ADOPT_GROUPS').split(/\s+/).reject(&:empty?)
 CHAT_ADOPT   = cf('AI_CHAT_ADOPT_GROUPS').split(/\s+/).reject(&:empty?)
 DROP_FP      = cf('DROP_GLOBAL_FINGERPRINT', '0') == '1'
 
+# ---- AI-Docs：免 WAF 验证的专用组（默认关闭，需在 ai-guard.conf 里配 AI_DOCS_*）----
+DOCS_GROUP    = cf('AI_DOCS_GROUP', '')
+DOCS_DOMAINS  = cf('AI_DOCS_DOMAINS').split(/\s+/).reject(&:empty?)
+DOCS_NODES    = cf('AI_DOCS_NODES').split(/\s+/).reject(&:empty?)
+DOCS_INTERVAL = ci('AI_DOCS_INTERVAL', 600)
+# 探测目标没填就拿第一个域名兜底。这里不能写死某个具体站点 —— 本文件是通用包，
+# 默认值只能从用户自己的配置里推出来。DOCS_DOMAINS 为空时这个组根本不会建，
+# 所以此处的空串不会被用上。
+DOCS_PROBE    = cf('AI_DOCS_PROBE',
+                   DOCS_DOMAINS.empty? ? '' : "https://#{DOCS_DOMAINS.first}/")
+
 cfg = YAML.load_file(path)
 abort 'ai-guard: 配置不是一个 YAML 映射' unless cfg.is_a?(Hash)
 nodes  = (cfg['proxies'] || []).map { |p| p['name'] }.compact
@@ -89,9 +101,21 @@ def mk_group(name, members, probe, interval, tolerance)
 end
 
 # ---- 1. 建两个出口组（同一个候选池，各自按自己的探测目标独立排名）----
-groups.reject! { |g| [API_GROUP, CHAT_GROUP].include?(g['name']) }
+# 注意用 MANAGED 而不是直接写 [API_GROUP, CHAT_GROUP, DOCS_GROUP]：
+# DOCS_GROUP 默认是空串，include?('') 会把配置里任何没有 name 的组误删。
+MANAGED = [API_GROUP, CHAT_GROUP, DOCS_GROUP].reject { |n| n.to_s.empty? }
+groups.reject! { |g| MANAGED.include?(g['name']) }
 groups << mk_group(API_GROUP,  pool, API_PROBE,  API_INTERVAL,  TOLERANCE)
 groups << mk_group(CHAT_GROUP, pool, CHAT_PROBE, CHAT_INTERVAL, TOLERANCE)
+
+# ---- AI-Docs 组：fallback（列表里的节点不存在时自动退回 AI-API 组）----
+if !DOCS_GROUP.empty? && !DOCS_DOMAINS.empty?
+  dk = DOCS_NODES.select { |n| nodes.include?(n) }
+  dk = [API_GROUP] if dk.empty?
+  dk << API_GROUP unless dk.include?(API_GROUP)
+  groups << { 'name' => DOCS_GROUP, 'type' => 'fallback',
+              'proxies' => dk, 'url' => DOCS_PROBE, 'interval' => DOCS_INTERVAL }
+end
 
 # ---- 2. 接管订阅自带的分流组（存在才动，不存在就跳过）----
 adopted = []
@@ -139,9 +163,13 @@ end
 # 唯一的例外是把 QUIC(UDP/443) 的 REJECT 留在第一条 —— 那是全局策略，别被顶掉。
 new_rules  = API_DOMAINS.map  { |d| "DOMAIN-SUFFIX,#{d},#{API_GROUP}" }
 new_rules += CHAT_DOMAINS.map { |d| "DOMAIN-SUFFIX,#{d},#{CHAT_GROUP}" }
+new_rules += DOCS_DOMAINS.map { |d| "DOMAIN-SUFFIX,#{d},#{DOCS_GROUP}" } if !DOCS_GROUP.empty? && !DOCS_DOMAINS.empty?
 unless new_rules.empty?
   # 先清掉本工具上次注入的，保证幂等
-  rules = rules.reject { |r| r.to_s.end_with?(",#{API_GROUP}", ",#{CHAT_GROUP}") }
+  # 同样用 MANAGED：DOCS_GROUP 为空时 ",#{DOCS_GROUP}" 会退化成 ","，
+  # 那会误删配置里任何以逗号结尾的规则。
+  suffixes = MANAGED.map { |n| ",#{n}" }
+  rules = rules.reject { |r| suffixes.any? { |s| r.to_s.end_with?(s) } }
   qidx  = rules.index { |r| r.to_s =~ /NETWORK,UDP\).*REJECT/ }
   at    = qidx.nil? ? 0 : qidx + 1
   new_rules.reverse.each { |r| rules.insert(at, r) }

@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard / reload.sh
+# openclash-ai-proxy-group / reload.sh  v1.1.0
 # 改完 ai-guard.conf 之后执行这个。
 #   reload.sh           校验 → 就地应用 → 重启 OpenClash → 指派分流组
 #   reload.sh --adopt   只做最后那步（不重启）

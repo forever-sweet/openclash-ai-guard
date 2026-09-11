@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard / ai-node-watch.sh
+# openclash-ai-proxy-group / ai-node-watch.sh  v1.1.0
 #
 # 每 10 分钟由 cron 调用，做三件 mihomo 自己做不到的事：
 #
@@ -22,6 +22,7 @@ BASE="/etc/openclash/ai-guard"
 CONF="$BASE/ai-guard.conf"
 HOOK="/etc/openclash/custom/openclash_custom_overwrite.sh"
 HOOK_MARK="ai-groups-overwrite.rb"
+VERSION="1.1.0"
 
 STATE="/tmp/ai-guard.state"
 LOG="/tmp/ai-guard.log"
@@ -37,6 +38,9 @@ AI_API_GROUP="${AI_API_GROUP:-AI-API}"
 AI_CHAT_GROUP="${AI_CHAT_GROUP:-AI-Chat}"
 AI_API_PROBE="${AI_API_PROBE:-https://cp.cloudflare.com/generate_204}"
 AI_CHAT_PROBE="${AI_CHAT_PROBE:-https://chatgpt.com/cdn-cgi/trace}"
+# 可选的免 WAF 验证组，默认空 = 没启用。本脚本不去"踢"它：
+# 它是 fallback 类型，要的就是"按名单顺序用"，重排名毫无意义。只在 --status 里显示。
+AI_DOCS_GROUP="${AI_DOCS_GROUP:-}"
 BAD_MS="${BAD_MS:-2000}"
 BAD_RATIO_NUM="${BAD_RATIO_NUM:-2}"
 BAD_RATIO_DEN="${BAD_RATIO_DEN:-3}"
@@ -67,15 +71,41 @@ api() {
     fi
 }
 urlenc() { ruby -rcgi -e 'print CGI.escape(ARGV[0])' "$1" </dev/null 2>/dev/null || echo "$1"; }
-# 把 {"A":1,"B":2} 拍平成每行 "名字 延迟"
-flatten() { sed 's/[{}"]//g' | tr ',' '\n' | sed 's/:/ /'; }
-now_of() { api "/proxies/$(urlenc "$1")" 10 | sed -n 's/.*"now":"\([^"]*\)".*/\1/p'; }
+
+# 把 {"名字":延迟,...} 拍平成每行 "名字<TAB>延迟"
+#
+# 必须用 ruby 解析，不要改回 sed/tr 拆字符串。v1.0.0 的实现是
+#     sed 's/[{}"]//g' | tr ',' '\n' | sed 's/:/ /'
+# 再用 awk '$1==名字' 查表 —— awk 默认按空白分字段，$1 只拿到第一个词，于是
+# **任何名字里带空格的节点都查不到、被判成 dead**。中文机场的主流命名全中
+# （"🇭🇰 香港 01"、"US 洛杉矶 02"、"HK-5 | 2x"），坏节点率会常驻 100%，
+# 于是每过一次冷却就去重拉一遍订阅。名字里带逗号还会被 tr 拆成两行、
+# 带冒号会被拆错字段，连 total 都算多。
+#
+# JSON 是 YAML 的子集，而 ruby-yaml 本来就是硬依赖，所以不引入新东西。
+# 分隔符用制表符：节点名可能含空格，但不会含制表符。
+# 只输出正整数延迟 —— 拿不到有效延迟的节点就该不出现在表里、被算作 dead。
+flatten() {
+    ruby -ryaml -e '
+      h = (YAML.load(STDIN.read) rescue nil)
+      exit 0 unless h.is_a?(Hash)
+      h.each { |k, v| puts "#{k}\t#{v}" if v.is_a?(Integer) && v > 0 }
+    ' 2>/dev/null
+}
+now_of() {
+    api "/proxies/$(urlenc "$1")" 10 | ruby -ryaml -e '
+      h = (YAML.load(STDIN.read) rescue nil)
+      print h["now"] if h.is_a?(Hash) && h["now"]
+    ' 2>/dev/null
+}
 
 if [ "$1" = "--status" ]; then
+    echo "版本     : $VERSION"
     echo "API      : $API"
     echo "配置     : $RUN_CFG"
     echo "$AI_API_GROUP  当前出口: $(now_of "$AI_API_GROUP")"
     echo "$AI_CHAT_GROUP 当前出口: $(now_of "$AI_CHAT_GROUP")"
+    [ -n "$AI_DOCS_GROUP" ] && echo "$AI_DOCS_GROUP 当前出口: $(now_of "$AI_DOCS_GROUP")"
     echo "状态     : $(cat "$STATE" 2>/dev/null | tr '\n' ' ')"
     echo "--- 最近 25 行日志 ---"
     tail -25 "$LOG" 2>/dev/null
@@ -103,8 +133,8 @@ CHAT_PROBE_ENC="$(urlenc "$AI_CHAT_PROBE")"
 
 API_BEFORE="$(now_of "$AI_API_GROUP")"
 CHAT_BEFORE="$(now_of "$AI_CHAT_GROUP")"
-PROBE_JSON="/tmp/ai-guard-probe.$$"
-api "/group/$API_G_ENC/delay?timeout=6000&url=$API_PROBE_ENC" 60 | flatten > "$PROBE_JSON"
+PROBE_TSV="/tmp/ai-guard-probe.$$"
+api "/group/$API_G_ENC/delay?timeout=6000&url=$API_PROBE_ENC" 60 | flatten > "$PROBE_TSV"
 api "/group/$CHAT_G_ENC/delay?timeout=6000&url=$CHAT_PROBE_ENC" 60 >/dev/null
 sleep 2
 API_NOW="$(now_of "$AI_API_GROUP")"
@@ -113,7 +143,7 @@ CHAT_NOW="$(now_of "$AI_CHAT_GROUP")"
 [ "$CHAT_BEFORE" != "$CHAT_NOW" ] && log "$AI_CHAT_GROUP 重选 ${CHAT_BEFORE:-?} -> ${CHAT_NOW:-?}"
 
 if [ -z "$API_NOW" ] && [ -z "$CHAT_NOW" ]; then
-    rm -f "$PROBE_JSON"
+    rm -f "$PROBE_TSV"
     log "ERROR 读不到出口组状态。API=$API 是否正确？secret 是否匹配？两个组是否已注入？"
     exit 1
 fi
@@ -123,11 +153,17 @@ fi
 # 所以不需要依赖订阅里任何具体的组名。
 TOTAL=0; GOOD=0; SLOW=0; DEAD=0
 MEMBERS="/tmp/ai-guard-mem.$$"
-api "/proxies/$API_G_ENC" 15 | sed 's/.*"all":\[//; s/\].*//' | tr ',' '\n' | sed 's/"//g' > "$MEMBERS"
+# 同样必须用 ruby：节点名里带逗号时 tr ',' 会把一个名字拆成两行，
+# total 算多、两半都查不到延迟、双双记成 dead。
+api "/proxies/$API_G_ENC" 15 | ruby -ryaml -e '
+  h = (YAML.load(STDIN.read) rescue nil)
+  exit 0 unless h.is_a?(Hash) && h["all"].is_a?(Array)
+  h["all"].each { |n| puts n }
+' 2>/dev/null > "$MEMBERS"
 while IFS= read -r n; do
     [ -z "$n" ] && continue
     TOTAL=$((TOTAL+1))
-    d=$(awk -v k="$n" '$1==k {print $2; exit}' "$PROBE_JSON")
+    d=$(awk -F'\t' -v k="$n" '$1==k {print $2; exit}' "$PROBE_TSV")
     if [ -z "$d" ]; then
         DEAD=$((DEAD+1))
     elif [ "$d" -gt "$BAD_MS" ] 2>/dev/null; then
@@ -136,7 +172,7 @@ while IFS= read -r n; do
         GOOD=$((GOOD+1))
     fi
 done < "$MEMBERS"
-rm -f "$PROBE_JSON" "$MEMBERS"
+rm -f "$PROBE_TSV" "$MEMBERS"
 
 if [ "$TOTAL" -lt 1 ]; then
     log "ERROR 取不到 $AI_API_GROUP 的成员列表，退出"; exit 1

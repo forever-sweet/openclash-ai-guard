@@ -1,4 +1,4 @@
-# openclash-ai-guard
+# openclash-ai-proxy-group
 
 给 OpenClash 加两个专门跑 AI 服务的出口策略组，并自动绕开坏节点。
 
@@ -102,10 +102,10 @@ because 自动选择 failed multiple times, activate health check
 opkg update && opkg install ruby ruby-yaml curl unzip
 ```
 
-然后下载并安装（把 `你的用户名` 换成实际的 GitHub 用户名）：
+然后下载并安装（把 `forever-sweet` 换成本仓库的 GitHub 用户名，浏览器地址栏里就有）：
 
 ```bash
-cd /tmp && rm -rf openclash-ai-guard* && wget -O ai-guard.zip https://github.com/你的用户名/openclash-ai-guard/archive/refs/heads/main.zip && unzip -o ai-guard.zip && cd openclash-ai-guard-main && sh install.sh
+cd /tmp && rm -rf openclash-ai-proxy-group* && wget -O ai-guard.zip https://github.com/forever-sweet/openclash-ai-proxy-group/archive/refs/heads/main.zip && unzip -o ai-guard.zip && cd openclash-ai-proxy-group-main && sh install.sh
 ```
 
 装完会自己校验配置、重启 OpenClash，并打印当前状态。
@@ -117,7 +117,7 @@ cd /tmp && rm -rf openclash-ai-guard* && wget -O ai-guard.zip https://github.com
 3. 在后台的「终端」里执行：
 
 ```bash
-cd /tmp/openclash-ai-guard-main && sh install.sh
+cd /tmp/openclash-ai-proxy-group-main && sh install.sh
 ```
 
 ### 路线 C：让 AI 帮你装
@@ -125,7 +125,7 @@ cd /tmp/openclash-ai-guard-main && sh install.sh
 复制下面整段，发给 Claude / ChatGPT / 任何能连你路由器的 AI 助手：
 
 ````text
-帮我在路由器上安装 openclash-ai-guard 这个工具。
+帮我在路由器上安装 openclash-ai-proxy-group 这个工具。
 
 我的环境：
 - 路由器 IP：192.168.1.1        ← 改成你的
@@ -133,7 +133,7 @@ cd /tmp/openclash-ai-guard-main && sh install.sh
 - SSH 密码：（我会在你问的时候告诉你）
 - 系统：OpenWrt / iStoreOS，已装好 OpenClash 并能正常上网
 
-项目地址：https://github.com/你的用户名/openclash-ai-guard
+项目地址：https://github.com/forever-sweet/openclash-ai-proxy-group
 
 请按这个顺序做，每一步告诉我结果：
 
@@ -168,6 +168,7 @@ cd /tmp/openclash-ai-guard-main && sh install.sh
 正常输出长这样：
 
 ```
+版本     : 1.1.0
 API      : http://127.0.0.1:9090
 配置     : /etc/openclash/xxx.yaml
 AI-API  当前出口: JP1-HY2
@@ -176,6 +177,10 @@ AI-Chat 当前出口: JP4-HY2
 --- 最近 25 行日志 ---
 2026-09-05 21:07:20 探测 total=56 good=30 slow=0 dead=26  AI-API=JP1-HY2 AI-Chat=JP4-HY2
 ```
+
+`total` 应该等于你订阅里的节点总数（减去被 `EXCLUDE_NODE_RE` 排除的）。
+如果 `dead` 常年等于 `total`、`good` 长期是 0，那不是你的机场全挂了，
+是你装的是 v1.0.0 —— 升级到 v1.1.0，见 [CHANGELOG](CHANGELOG.md)。
 
 确认流量真的走了新出口：
 
@@ -227,6 +232,36 @@ EXCLUDE_NODE_RE="台湾|下载专用"   # 排除名字里含这些字的
 
 其余参数（探测间隔、容差、阈值、冷却时间）配置文件里每一项都有注释说明。
 
+### 可选：绕过 WAF 的白名单出口组
+
+默认关闭。只有遇到下面这种情况才需要它：
+
+某个站点的 WAF（典型是阿里云滑块验证）只放行一小部分出口 IP。这种情况 url-test
+帮不上忙 —— 所有节点都连得通、也够快，只是**大部分节点拿回来的是验证页而不是
+真内容**。延迟探测看不出任何区别。
+
+实测碰到过一次：某中转站在 46 个节点里只有 3 个美国节点能直接返回真页面。
+
+```sh
+AI_DOCS_GROUP="AI-Docs"
+AI_DOCS_DOMAINS="被拦的站点.com"
+AI_DOCS_NODES="US-2 US-3 US-5"          # 实测能拿到真页面的那几个
+AI_DOCS_PROBE="https://被拦的站点.com/"  # 留空则自动取第一个域名
+```
+
+怎么找出可用节点：挨个节点 curl 目标页面，看返回的是真内容还是验证页。
+**不要看 HTTP 状态码** —— 滑块页也是 200，要抓页面里的关键词。
+
+两个跟本文其他地方相反的设计，是故意的：
+
+- **type 用 `fallback` 不是 `url-test`**。这里要的是「按我指定的顺序用」而不是
+  「用最快的」—— 名单第一个能用就一直用它，挂了才顺延。
+- **名单写死**。前面反复强调过别写死节点，那是因为线路质量是分钟级翻滚的；
+  而「哪些 IP 被 WAF 放行」取决于机房 IP 段，是稳定的。
+
+名单里的节点全挂时会自动退回 `AI_API_GROUP`（验证页会重新出现，但至少通）。
+`AI_DOCS_GROUP` 或 `AI_DOCS_DOMAINS` 留空 = 整个功能不启用，不往配置里加任何东西。
+
 ---
 
 ## 可选：顺手调这三个 OpenClash 设置
@@ -267,15 +302,36 @@ OpenClash 拉过新订阅，它拉回来的还是同一份缓存 —— 机场�
 uci set openclash.config.auto_update='1' && uci set openclash.config.config_auto_update_mode='0' && uci set openclash.config.config_update_week_time='*' && uci set openclash.config.auto_update_time='3' && uci commit openclash && /etc/init.d/openclash restart
 ```
 
-### 3. 健康检查 URL 从明文 http 换成 https
+### 3. 健康检查换成 Cloudflare 的连通性端点，间隔别设太长
 
-OpenClash 默认给所有 url-test 组用 `http://www.gstatic.com/generate_204`（明文）。
-明文 HTTP 测出来的延迟和真实 TLS 路径质量是脱节的 —— 一个节点明文能通、TLS 被
-干扰的情况很常见。顺便把间隔拉长、容差调大，减少不必要的出口切换：
+OpenClash 默认给所有 url-test 组用 `http://www.gstatic.com/generate_204`。
+两个问题：
+
+**明文 HTTP 测出来的延迟和真实 TLS 路径质量脱节** —— 一个节点明文能通、TLS 被干扰
+的情况很常见。
+
+**gstatic 这个目标本身也不可靠。** 实测同一时刻同一批节点：
+
+| 节点 | gstatic | cp.cloudflare.com | github.com |
+|---|---|---|---|
+| HK-6 | 6318ms | 179ms | 310ms |
+| HK-2 | 失败 | 2497ms | 356ms |
+
+gstatic 判 HK-6 快废了、判 HK-2 死了，而这两个节点当时访问 GitHub 都是正常的。
+按 gstatic 排名会把好节点当坏的踢掉、把坏的选上来。
+`cp.cloudflare.com/generate_204` 是 Cloudflare 官方的连通性检测端点，走 anycast，
+和大多数境外站点的实际路径更接近。
+
+**间隔也别设太长。** 机场节点是分钟级翻滚的，`interval` 设成 600 意味着组可能在一个
+已经打不通的节点上停留最多 10 分钟 —— 实测撞上过：兜底组停在一个死掉的 HK 节点上，
+GitHub 和 YouTube 全部超时，直到下一次健康检查才恢复。180 秒是个比较平衡的值。
 
 ```bash
-uci set openclash.config.urltest_address_mod='https://www.gstatic.com/generate_204' && uci set openclash.config.urltest_interval_mod='600' && uci set openclash.config.tolerance='300' && uci commit openclash && /etc/init.d/openclash restart
+uci set openclash.config.urltest_address_mod='https://cp.cloudflare.com/generate_204' && uci set openclash.config.urltest_interval_mod='180' && uci set openclash.config.tolerance='300' && uci commit openclash && /etc/init.d/openclash restart
 ```
+
+`tolerance='300'` 的作用是：大家延迟都差不多时按住不动，只有明显更快（差 300ms 以上）
+才切换，避免没必要的出口跳动打断长连接。
 
 > 注意这三个 UCI 项只影响**订阅自带的**那些 url-test 组。本工具新建的两个 AI 组
 > 用的是 `ai-guard.conf` 里的独立设置，不受它们影响 —— 这是故意的：通用浏览和
@@ -300,6 +356,19 @@ uci set openclash.config.urltest_address_mod='https://www.gstatic.com/generate_2
 ```bash
 /etc/openclash/ai-guard/uninstall.sh                # 干净卸载
 ```
+
+---
+
+## 升级
+
+重新跑一次 `install.sh` 就行，它是幂等的。**你的 `ai-guard.conf` 不会被覆盖** ——
+新版配置会存成 `ai-guard.conf.new` 供你对比（新增的键需要自己手动搬过去）。
+
+```bash
+cd /tmp && rm -rf openclash-ai-proxy-group* && wget -O ai-guard.zip https://github.com/forever-sweet/openclash-ai-proxy-group/archive/refs/heads/main.zip && unzip -o ai-guard.zip && cd openclash-ai-proxy-group-main && sh install.sh
+```
+
+每版改了什么见 [CHANGELOG.md](CHANGELOG.md)。当前版本用 `--status` 第一行确认。
 
 ---
 
@@ -364,6 +433,19 @@ ruby -ryaml -e "puts YAML.load_file('/etc/openclash/custom/openclash_custom_rule
 ruby -ryaml -e "puts YAML.load_file('/etc/openclash/$(basename $(uci -q get openclash.config.config_path))')['rules'].size"
 ```
 
+**日志里 `dead` 几乎等于 `total`，但节点其实能用**
+
+如果你的节点名带空格（`🇭🇰 香港 01` 这种），你装的是 v1.0.0。那一版用
+`awk '$1==名字'` 查延迟表，awk 按空白分字段、`$1` 只拿到第一个词，于是名字带
+空格的节点一律查不到、全被记成 dead。升级到 v1.1.0。
+
+判断方法：`--status` 第一行有没有版本号。没有就是 v1.0.0。
+
+**订阅被反复重拉**
+
+同上，是上面那个 bug 的连带后果：坏节点率常驻 100% → 连续 3 次过阈值 →
+每过 4 小时冷却就重拉一次。升级即止。
+
 **组在，但域名还是走兜底规则**
 
 看规则有没有注入进去：
@@ -384,14 +466,27 @@ grep -nE 'AI-API|AI-Chat' /etc/openclash/$(basename $(uci -q get openclash.confi
 
 ---
 
-## 三个踩过的坑（如果你要改这份代码，请先读）
+## 四个踩过的坑（如果你要改这份代码，请先读）
 
-**1. 不要用 `type: fallback`**
+**0. 解析 JSON 一定要用 ruby，不要用 sed / tr / awk 拆**
+
+`ruby-yaml` 已经是硬依赖，JSON 又是 YAML 的子集，所以解析是零成本的。
+自己拆字符串的代价见 v1.1.0 的修复记录 —— 一个 `awk '$1==k'` 让所有带空格的
+节点名全被误判成 dead，而且**不报任何错**，只是统计数字悄悄全错。
+
+用 ruby 解析还有一个好处：拿不到的东西就是拿不到，不会给你半截字符串。
+
+**1. 不要用 `type: fallback`（唯一的例外是 AI-Docs）**
 
 `fallback` 只判断"活/死"，不看质量。晚高峰时大量节点处于「能回包但已经 1 秒多」
 的状态而不是干脆的死，`fallback` 会因为它在成员列表里更靠前而选中它。
 实测：`HK-5 1131ms` 和 `JP4-HY2 193ms` 之间，fallback 选了 HK-5，
 客户端表现是 TLS 握手失败。所以本工具用 `url-test` + 大 `tolerance`。
+
+唯一的例外是上面那个可选的 AI-Docs 组，它**故意**用 `fallback`：那里要的不是
+"最快"，是"按我指定的顺序用"，而"哪些 IP 被 WAF 放行"这件事跟延迟无关。
+换句话说，只有当你**确实想要"按名单顺序、能用就用第一个"**时才该写 `fallback`，
+其他任何情况下都用 `url-test`。
 
 **2. 绝对不要加 `expected-status`**
 
@@ -424,6 +519,22 @@ mihomo 本身吃得下，`clash -t` 也能过 —— 但 OpenClash 自己的 rub
 
 如果你的机场晚高峰整体崩掉，这个工具会记录下来、并在确认不是抖动之后帮你重拉
 订阅 —— 但换机场是你的决定，不是脚本的。
+
+---
+
+## 我在用的机场
+
+> **利益披露：下面是我自己的推广链接，我会拿到返利。**
+
+本文所有实测数据（节点延迟、对 AI 端点的成功率、晚高峰坏节点比例）都来自
+[mitce](https://mitce.io/aff.php?aff=52428)。这既是数据的来源，也是数据的局限 ——
+换一家机场，具体数字和结论都未必一样，别把这里的节点名当成什么通用结论。
+
+需要说清楚的是：**这个工具不依赖任何特定机场**，它读的是你自己订阅里的节点，
+用你自己配的探测目标排名。你用别家一样能跑，没有任何绑定。
+
+如果你已经有机场且用着没问题，不用换 —— 本文档对你的价值在前面那些实测和踩坑，
+不在这一节。
 
 ---
 

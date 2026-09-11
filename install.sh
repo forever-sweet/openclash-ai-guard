@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard 安装脚本
+# openclash-ai-proxy-group 安装脚本  v1.1.0
 # 用法:  sh install.sh
 # 特点:  幂等（可重复执行）、装前校验、失败不重启、附带一键卸载
 
@@ -19,7 +19,7 @@ die()  { echo "  [失败] $*"; exit 1; }
 
 echo ""
 echo "=============================================="
-echo " openclash-ai-guard 安装"
+echo " openclash-ai-proxy-group 安装"
 echo "=============================================="
 
 # ---------- 1. 环境检查 ----------
@@ -84,13 +84,9 @@ ok "已加入 crontab（标记 $CRON_MARK，OpenClash 重启不会删它）"
 # ---------- 5. 校验 + 应用 + 重启（交给 reload.sh，逻辑只维护一份）----------
 echo ""
 echo "[5/6] 校验并应用"
-if [ "$HOOK_MANUAL" = "1" ]; then
-    warn "钩子需要你手动加那两行，这次先不应用。加完后执行： $BASE/reload.sh"
-else
-    # reload.sh 里做了：副本试跑 → 内核 clash -t 校验 → 就地写入 → 重启 → 指派分流组
-    # 校验不过它会直接退出且不重启，你的网络不受影响
-    "$BASE/reload.sh" || die "应用失败，上面有原因；已装好的文件不影响现有网络，修好后执行 $BASE/reload.sh"
-fi
+# reload.sh 里做了：副本试跑 → 内核 clash -t 校验 → 就地写入 → 重启 → 指派分流组
+# 校验不过它会直接退出且不重启，你的网络不受影响
+"$BASE/reload.sh" || die "应用失败，上面有原因；已装好的文件不影响现有网络，修好后执行 $BASE/reload.sh"
 
 # ---------- 6. 收尾 ----------
 echo ""

@@ -1,5 +1,5 @@
 #!/bin/sh
-# openclash-ai-guard / hook-install.sh
+# openclash-ai-proxy-group / hook-install.sh
 # 把"调用 ai-groups-overwrite.rb"这件事挂到 OpenClash 官方钩子上。
 # install.sh 和 ai-node-watch.sh 的自愈都调用这个，逻辑只维护一份。
 #
@@ -42,7 +42,7 @@ awk '
   { lines[NR] = $0 }
   function snippet() {
     print ""
-    print "# ---- openclash-ai-guard ---- 由 hook-install.sh 自动加入，勿删"
+    print "# ---- openclash-ai-proxy-group ---- 由 hook-install.sh 自动加入，勿删"
     print "RB=/etc/openclash/ai-guard/ai-groups-overwrite.rb"
     print "[ -f \"$RB\" ] && ruby \"$RB\" \"$1\" >> /tmp/openclash.log 2>&1"
     print ""
@@ -57,5 +57,17 @@ awk '
     }
     if (!isexit) snippet()
   }
-' "$HOOK" > "$HOOK.aiguard.new" && mv "$HOOK.aiguard.new" "$HOOK" && chmod +x "$HOOK"
+' "$HOOK" > "$HOOK.aiguard.new" || {
+    rm -f "$HOOK.aiguard.new"
+    echo "hook: 追加失败（awk 出错），原钩子未改动"
+    exit 1
+}
+# 确认新文件里真的有我们的调用，再覆盖 —— 否则宁可什么都不做
+if ! grep -q "$MARK" "$HOOK.aiguard.new"; then
+    rm -f "$HOOK.aiguard.new"
+    echo "hook: 追加后校验不通过，原钩子未改动"
+    exit 1
+fi
+mv "$HOOK.aiguard.new" "$HOOK" && chmod +x "$HOOK" || {
+    echo "hook: 写回失败"; exit 1; }
 echo "hook: 检测到你自己的内容，已在末尾追加调用（原文件备份在 $BASE/hook.orig.$TS）"
